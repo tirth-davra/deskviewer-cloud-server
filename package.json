@@ -1,0 +1,27 @@
+{
+  "name": "deskviewer-cloud-server",
+  "version": "1.0.0",
+  "description": "Cloud WebSocket server for DeskViewer remote desktop application",
+  "main": "cloud-websocket-server.js",
+  "scripts": {
+    "start": "node cloud-websocket-server.js",
+    "dev": "nodemon cloud-websocket-server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "keywords": [
+    "websocket",
+    "remote-desktop",
+    "signaling",
+    "webrtc"
+  ],
+  "author": "DeskViewer Team",
+  "license": "MIT"
+} 
