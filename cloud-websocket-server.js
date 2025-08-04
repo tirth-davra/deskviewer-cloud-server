@@ -7,11 +7,23 @@ const server = http.createServer();
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
 
-// Store sessions
+// Session management
 const sessions = new Map();
+
+// Session interface
+class Session {
+  constructor(sessionId) {
+    this.sessionId = sessionId;
+    this.host = null;
+    this.clients = new Map();
+    this.createdAt = new Date();
+    this.connectionOrder = []; // Track connection order for role assignment
+  }
+}
 
 console.log("🚀 Cloud WebSocket Server Starting...");
 
+// Handle WebSocket connections
 wss.on("connection", (ws) => {
   console.log("🔌 New WebSocket connection established");
 
@@ -35,23 +47,11 @@ function handleWebSocketMessage(ws, message) {
   console.log("📨 Received message:", message.type);
 
   switch (message.type) {
-    case "create_session":
-      handleCreateSession(ws, message);
-      break;
-    case "join_session":
-      handleJoinSession(ws, message);
+    case "connect_to_session":
+      handleConnectToSession(ws, message);
       break;
     case "leave_session":
       handleLeaveSession(ws, message);
-      break;
-    case "connection_request":
-      handleConnectionRequest(ws, message);
-      break;
-    case "connection_accepted":
-      handleConnectionAccepted(ws, message);
-      break;
-    case "connection_rejected":
-      handleConnectionRejected(ws, message);
       break;
     case "offer":
     case "answer":
@@ -72,209 +72,62 @@ function handleWebSocketMessage(ws, message) {
   }
 }
 
-// Handle session creation
-function handleCreateSession(ws, message) {
-  const { sessionId } = message;
+// New unified connection handler
+function handleConnectToSession(ws, message) {
+  const { sessionId, clientId } = message;
 
+  // Get or create session
   let session = sessions.get(sessionId);
-
-  if (session && session.host) {
-    ws.send(
-      JSON.stringify({
-        type: "session_error",
-        sessionId,
-        error: "Session already exists",
-      })
-    );
-    return;
-  }
-
   if (!session) {
-    // Create new session
-    session = {
-      host: ws,
-      clients: new Map(),
-      pendingClients: new Map(),
-      createdAt: new Date(),
-    };
+    session = new Session(sessionId);
     sessions.set(sessionId, session);
-  } else {
-    // Session exists but no host - set this connection as host
-    session.host = ws;
+    console.log("✅ Created new session:", sessionId);
   }
 
-  console.log("✅ Session created:", sessionId);
+  // Add connection to order tracking
+  session.connectionOrder.push({ ws, clientId });
+
+  // Determine role based on connection order
+  let role;
+  if (session.connectionOrder.length === 1) {
+    // First connection = host
+    role = "host";
+    session.host = ws;
+    console.log("✅ First connection - assigned as host:", clientId);
+  } else {
+    // Subsequent connections = client
+    role = "client";
+    session.clients.set(clientId, ws);
+    console.log("✅ Subsequent connection - assigned as client:", clientId);
+  }
+
+  // Send connection confirmation with role
   ws.send(
     JSON.stringify({
-      type: "session_created",
+      type: "session_connected",
       sessionId,
+      clientId,
+      role,
     })
   );
 
-  // Check if there are any pending clients waiting for this session
-  if (session.pendingClients && session.pendingClients.size > 0) {
-    console.log("📨 Found pending clients for session:", sessionId);
-    session.pendingClients.forEach((clientWs, clientId) => {
-      console.log("📨 Sending connection request to host for pending client:", clientId);
-      ws.send(
-        JSON.stringify({
-          type: "connection_request",
-          sessionId,
-          clientId,
-          fromSessionId: clientId.split('_')[0],
-          fromClientId: clientId,
-        })
-      );
-    });
-  }
-}
-
-// Handle session joining
-function handleJoinSession(ws, message) {
-  const { sessionId, clientId } = message;
-
-  const session = sessions.get(sessionId);
-  if (!session) {
-    // Session doesn't exist yet - store the client's request and wait for host
-    console.log("📨 Client trying to join non-existent session:", sessionId, "Client:", clientId);
-    console.log("📨 Storing client request for when host creates session");
-
-    // Store the client's WebSocket connection for when the host creates the session
-    const pendingSession = {
-      host: null,
-      clients: new Map(),
-      pendingClients: new Map(),
-      createdAt: new Date(),
-    };
-    pendingSession.pendingClients.set(clientId, ws);
-    sessions.set(sessionId, pendingSession);
-
-    // Send session creation request to all connected clients (potential hosts)
-    console.log("📨 Broadcasting session creation request to all clients");
-    let broadcastCount = 0;
-    wss.clients.forEach((client) => {
-      if (client !== ws && client.readyState === WebSocket.OPEN) {
-        broadcastCount++;
-        console.log(`📨 Broadcasting to client ${broadcastCount}`);
-        client.send(
-          JSON.stringify({
-            type: "session_creation_request",
-            sessionId,
-            clientId,
-            fromSessionId: clientId.split('_')[0],
-            fromClientId: clientId,
-          })
-        );
-      }
-    });
-    console.log(`📨 Broadcasted to ${broadcastCount} clients`);
-
-    console.log("📨 Client request stored for session:", sessionId);
-    return;
-  }
-
-  // Send connection request to host
-  if (session.host) {
+  // If this is a client, notify the host
+  if (role === "client" && session.host) {
     session.host.send(
       JSON.stringify({
-        type: "connection_request",
-        sessionId,
-        clientId,
-        fromSessionId: clientId.split('_')[0], // Extract session ID from client ID
-        fromClientId: clientId,
-      })
-    );
-
-    // Store client temporarily until host accepts
-    session.pendingClients = session.pendingClients || new Map();
-    session.pendingClients.set(clientId, ws);
-
-    console.log("📨 Connection request sent to host for client:", clientId);
-  } else {
-    // No host available but session exists - store client request
-    session.pendingClients = session.pendingClients || new Map();
-    session.pendingClients.set(clientId, ws);
-    console.log("📨 Client request stored for session:", sessionId, "Client:", clientId);
-  }
-}
-
-// Handle connection request
-function handleConnectionRequest(ws, message) {
-  const { sessionId, clientId, fromSessionId, fromClientId } = message;
-
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  // Forward connection request to host
-  if (session.host) {
-    session.host.send(
-      JSON.stringify({
-        type: "connection_request",
-        sessionId,
-        clientId,
-        fromSessionId,
-        fromClientId,
-      })
-    );
-  }
-}
-
-// Handle connection accepted
-function handleConnectionAccepted(ws, message) {
-  const { sessionId, clientId } = message;
-
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  // Move client from pending to active
-  if (session.pendingClients && session.pendingClients.has(clientId)) {
-    const clientWs = session.pendingClients.get(clientId);
-    session.clients.set(clientId, clientWs);
-    session.pendingClients.delete(clientId);
-
-    console.log("✅ Client connection accepted:", sessionId, "Client:", clientId);
-    clientWs.send(
-      JSON.stringify({
-        type: "session_joined",
-        sessionId,
-        clientId,
-      })
-    );
-
-    // Notify host about new client
-    if (session.host) {
-      session.host.send(
-        JSON.stringify({
-          type: "client_joined",
-          sessionId,
-          clientId,
-        })
-      );
-    }
-  }
-}
-
-// Handle connection rejected
-function handleConnectionRejected(ws, message) {
-  const { sessionId, clientId } = message;
-
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  // Remove client from pending
-  if (session.pendingClients && session.pendingClients.has(clientId)) {
-    const clientWs = session.pendingClients.get(clientId);
-    session.pendingClients.delete(clientId);
-
-    console.log("❌ Client connection rejected:", sessionId, "Client:", clientId);
-    clientWs.send(
-      JSON.stringify({
-        type: "connection_rejected",
+        type: "client_joined",
         sessionId,
         clientId,
       })
     );
   }
+
+  console.log(
+    `✅ ${role} connected to session:`,
+    sessionId,
+    "Client ID:",
+    clientId
+  );
 }
 
 // Handle session leaving
@@ -283,6 +136,14 @@ function handleLeaveSession(ws, message) {
 
   const session = sessions.get(sessionId);
   if (!session) return;
+
+  // Find and remove from connection order
+  const connectionIndex = session.connectionOrder.findIndex(
+    (conn) => conn.ws === ws
+  );
+  if (connectionIndex !== -1) {
+    session.connectionOrder.splice(connectionIndex, 1);
+  }
 
   if (session.host === ws) {
     // Host is leaving
@@ -313,41 +174,43 @@ function handleLeaveSession(ws, message) {
   }
 }
 
-// Handle signaling messages
+// Handle signaling messages (offer, answer, ICE candidates)
 function handleSignalingMessage(ws, message) {
   const { sessionId, clientId } = message;
 
   const session = sessions.get(sessionId);
   if (!session) return;
 
+  // Forward signaling messages
   if (session.host === ws) {
-    // Message from host to specific client
-    const clientWs = session.clients.get(clientId);
-    if (clientWs) {
-      clientWs.send(JSON.stringify(message));
+    // Host sending to specific client
+    const targetClient = session.clients.get(clientId);
+    if (targetClient) {
+      targetClient.send(JSON.stringify(message));
     }
   } else {
-    // Message from client to host
+    // Client sending to host
     if (session.host) {
       session.host.send(JSON.stringify(message));
     }
   }
 }
 
-// Handle control messages
+// Handle control messages (mouse, keyboard, screen resolution)
 function handleControlMessage(ws, message) {
-  const { sessionId, clientId } = message;
+  const { sessionId } = message;
 
   const session = sessions.get(sessionId);
   if (!session) return;
 
+  // Forward control messages
   if (session.host === ws) {
-    // Control message from host to clients
+    // Host sending to all clients
     session.clients.forEach((clientWs) => {
       clientWs.send(JSON.stringify(message));
     });
   } else {
-    // Control message from client to host
+    // Client sending to host
     if (session.host) {
       session.host.send(JSON.stringify(message));
     }
@@ -357,6 +220,7 @@ function handleControlMessage(ws, message) {
 // Clean up disconnected clients
 function cleanupDisconnectedClient(ws) {
   for (const [sessionId, session] of sessions.entries()) {
+    // Check if this is the host
     if (session.host === ws) {
       console.log("🔌 Host disconnected from session:", sessionId);
       session.clients.forEach((clientWs) => {
@@ -367,22 +231,11 @@ function cleanupDisconnectedClient(ws) {
           })
         );
       });
-      // Also notify pending clients
-      if (session.pendingClients) {
-        session.pendingClients.forEach((clientWs) => {
-          clientWs.send(
-            JSON.stringify({
-              type: "host_disconnected",
-              sessionId,
-            })
-          );
-        });
-      }
       sessions.delete(sessionId);
       break;
     }
 
-    // Check active clients
+    // Check if this is a client
     for (const [clientId, clientWs] of session.clients.entries()) {
       if (clientWs === ws) {
         console.log(
@@ -392,6 +245,14 @@ function cleanupDisconnectedClient(ws) {
           clientId
         );
         session.clients.delete(clientId);
+
+        // Remove from connection order
+        const connectionIndex = session.connectionOrder.findIndex(
+          (conn) => conn.ws === ws
+        );
+        if (connectionIndex !== -1) {
+          session.connectionOrder.splice(connectionIndex, 1);
+        }
 
         if (session.host) {
           session.host.send(
@@ -405,22 +266,6 @@ function cleanupDisconnectedClient(ws) {
         break;
       }
     }
-
-    // Check pending clients
-    if (session.pendingClients) {
-      for (const [clientId, clientWs] of session.pendingClients.entries()) {
-        if (clientWs === ws) {
-          console.log(
-            "🔌 Pending client disconnected from session:",
-            sessionId,
-            "Client:",
-            clientId
-          );
-          session.pendingClients.delete(clientId);
-          break;
-        }
-      }
-    }
   }
 }
 
@@ -430,7 +275,10 @@ const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`✅ Cloud WebSocket server running on port ${PORT}`);
   console.log(`🌐 Server is ready for internet connections`);
-  console.log(`📡 Sessions: ${sessions.size}`);
+  console.log(
+    `📡 Server URL: wss://deskviewer-cloud-server-production.up.railway.app`
+  );
+  console.log(`📊 Sessions: ${sessions.size}`);
 });
 
 // Handle server errors
