@@ -151,8 +151,11 @@ function handleJoinSession(ws, message) {
 
     // Send session creation request to all connected clients (potential hosts)
     console.log("📨 Broadcasting session creation request to all clients");
+    let broadcastCount = 0;
     wss.clients.forEach((client) => {
       if (client !== ws && client.readyState === WebSocket.OPEN) {
+        broadcastCount++;
+        console.log(`📨 Broadcasting to client ${broadcastCount}`);
         client.send(
           JSON.stringify({
             type: "session_creation_request",
@@ -164,6 +167,7 @@ function handleJoinSession(ws, message) {
         );
       }
     });
+    console.log(`📨 Broadcasted to ${broadcastCount} clients`);
 
     console.log("📨 Client request stored for session:", sessionId);
     return;
