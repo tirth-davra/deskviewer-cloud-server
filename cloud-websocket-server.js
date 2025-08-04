@@ -76,7 +76,9 @@ function handleWebSocketMessage(ws, message) {
 function handleCreateSession(ws, message) {
   const { sessionId } = message;
 
-  if (sessions.has(sessionId)) {
+  let session = sessions.get(sessionId);
+
+  if (session && session.host) {
     ws.send(
       JSON.stringify({
         type: "session_error",
@@ -87,11 +89,19 @@ function handleCreateSession(ws, message) {
     return;
   }
 
-  sessions.set(sessionId, {
-    host: ws,
-    clients: new Map(),
-    createdAt: new Date(),
-  });
+  if (!session) {
+    // Create new session
+    session = {
+      host: ws,
+      clients: new Map(),
+      pendingClients: new Map(),
+      createdAt: new Date(),
+    };
+    sessions.set(sessionId, session);
+  } else {
+    // Session exists but no host - set this connection as host
+    session.host = ws;
+  }
 
   console.log("✅ Session created:", sessionId);
   ws.send(
@@ -100,6 +110,23 @@ function handleCreateSession(ws, message) {
       sessionId,
     })
   );
+
+  // Check if there are any pending clients waiting for this session
+  if (session.pendingClients && session.pendingClients.size > 0) {
+    console.log("📨 Found pending clients for session:", sessionId);
+    session.pendingClients.forEach((clientWs, clientId) => {
+      console.log("📨 Sending connection request to host for pending client:", clientId);
+      ws.send(
+        JSON.stringify({
+          type: "connection_request",
+          sessionId,
+          clientId,
+          fromSessionId: clientId.split('_')[0],
+          fromClientId: clientId,
+        })
+      );
+    });
+  }
 }
 
 // Handle session joining
@@ -108,13 +135,21 @@ function handleJoinSession(ws, message) {
 
   const session = sessions.get(sessionId);
   if (!session) {
-    ws.send(
-      JSON.stringify({
-        type: "session_error",
-        sessionId,
-        error: "Session not found",
-      })
-    );
+    // Session doesn't exist yet - store the client's request and wait for host
+    console.log("📨 Client trying to join non-existent session:", sessionId, "Client:", clientId);
+    console.log("📨 Storing client request for when host creates session");
+
+    // Store the client's WebSocket connection for when the host creates the session
+    const pendingSession = {
+      host: null,
+      clients: new Map(),
+      pendingClients: new Map(),
+      createdAt: new Date(),
+    };
+    pendingSession.pendingClients.set(clientId, ws);
+    sessions.set(sessionId, pendingSession);
+
+    console.log("📨 Client request stored for session:", sessionId);
     return;
   }
 
@@ -136,14 +171,10 @@ function handleJoinSession(ws, message) {
 
     console.log("📨 Connection request sent to host for client:", clientId);
   } else {
-    // No host available
-    ws.send(
-      JSON.stringify({
-        type: "session_error",
-        sessionId,
-        error: "No host available for this session",
-      })
-    );
+    // No host available but session exists - store client request
+    session.pendingClients = session.pendingClients || new Map();
+    session.pendingClients.set(clientId, ws);
+    console.log("📨 Client request stored for session:", sessionId, "Client:", clientId);
   }
 }
 
