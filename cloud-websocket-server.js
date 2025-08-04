@@ -44,6 +44,15 @@ function handleWebSocketMessage(ws, message) {
     case "leave_session":
       handleLeaveSession(ws, message);
       break;
+    case "connection_request":
+      handleConnectionRequest(ws, message);
+      break;
+    case "connection_accepted":
+      handleConnectionAccepted(ws, message);
+      break;
+    case "connection_rejected":
+      handleConnectionRejected(ws, message);
+      break;
     case "offer":
     case "answer":
     case "ice_candidate":
@@ -67,7 +76,9 @@ function handleWebSocketMessage(ws, message) {
 function handleCreateSession(ws, message) {
   const { sessionId } = message;
 
-  if (sessions.has(sessionId)) {
+  let session = sessions.get(sessionId);
+
+  if (session && session.host) {
     ws.send(
       JSON.stringify({
         type: "session_error",
@@ -78,11 +89,19 @@ function handleCreateSession(ws, message) {
     return;
   }
 
-  sessions.set(sessionId, {
-    host: ws,
-    clients: new Map(),
-    createdAt: new Date(),
-  });
+  if (!session) {
+    // Create new session
+    session = {
+      host: ws,
+      clients: new Map(),
+      pendingClients: new Map(),
+      createdAt: new Date(),
+    };
+    sessions.set(sessionId, session);
+  } else {
+    // Session exists but no host - set this connection as host
+    session.host = ws;
+  }
 
   console.log("✅ Session created:", sessionId);
   ws.send(
@@ -91,6 +110,26 @@ function handleCreateSession(ws, message) {
       sessionId,
     })
   );
+
+  // Check if there are any pending clients waiting for this session
+  if (session.pendingClients && session.pendingClients.size > 0) {
+    console.log("📨 Found pending clients for session:", sessionId);
+    session.pendingClients.forEach((clientWs, clientId) => {
+      console.log(
+        "📨 Sending connection request to host for pending client:",
+        clientId
+      );
+      ws.send(
+        JSON.stringify({
+          type: "connection_request",
+          sessionId,
+          clientId,
+          fromSessionId: clientId.split("_")[0],
+          fromClientId: clientId,
+        })
+      );
+    });
+  }
 }
 
 // Handle session joining
@@ -99,32 +138,161 @@ function handleJoinSession(ws, message) {
 
   const session = sessions.get(sessionId);
   if (!session) {
-    ws.send(
-      JSON.stringify({
-        type: "session_error",
-        sessionId,
-        error: "Session not found",
-      })
+    // Session doesn't exist yet - store the client's request and wait for host
+    console.log(
+      "📨 Client trying to join non-existent session:",
+      sessionId,
+      "Client:",
+      clientId
     );
+    console.log("📨 Storing client request for when host creates session");
+
+    // Store the client's WebSocket connection for when the host creates the session
+    const pendingSession = {
+      host: null,
+      clients: new Map(),
+      pendingClients: new Map(),
+      createdAt: new Date(),
+    };
+    pendingSession.pendingClients.set(clientId, ws);
+    sessions.set(sessionId, pendingSession);
+
+    // Send session creation request to all connected clients (potential hosts)
+    console.log("📨 Broadcasting session creation request to all clients");
+    let broadcastCount = 0;
+    wss.clients.forEach((client) => {
+      if (client !== ws && client.readyState === WebSocket.OPEN) {
+        broadcastCount++;
+        console.log(`📨 Broadcasting to client ${broadcastCount}`);
+        client.send(
+          JSON.stringify({
+            type: "session_creation_request",
+            sessionId,
+            clientId,
+            fromSessionId: clientId.split("_")[0],
+            fromClientId: clientId,
+          })
+        );
+      }
+    });
+    console.log(`📨 Broadcasted to ${broadcastCount} clients`);
+
+    console.log("📨 Client request stored for session:", sessionId);
     return;
   }
 
-  session.clients.set(clientId, ws);
-
-  console.log("✅ Client joined session:", sessionId, "Client:", clientId);
-  ws.send(
-    JSON.stringify({
-      type: "session_joined",
-      sessionId,
-      clientId,
-    })
-  );
-
-  // Notify host about new client
+  // Send connection request to host
   if (session.host) {
     session.host.send(
       JSON.stringify({
-        type: "client_joined",
+        type: "connection_request",
+        sessionId,
+        clientId,
+        fromSessionId: clientId.split("_")[0], // Extract session ID from client ID
+        fromClientId: clientId,
+      })
+    );
+
+    // Store client temporarily until host accepts
+    session.pendingClients = session.pendingClients || new Map();
+    session.pendingClients.set(clientId, ws);
+
+    console.log("📨 Connection request sent to host for client:", clientId);
+  } else {
+    // No host available but session exists - store client request
+    session.pendingClients = session.pendingClients || new Map();
+    session.pendingClients.set(clientId, ws);
+    console.log(
+      "📨 Client request stored for session:",
+      sessionId,
+      "Client:",
+      clientId
+    );
+  }
+}
+
+// Handle connection request
+function handleConnectionRequest(ws, message) {
+  const { sessionId, clientId, fromSessionId, fromClientId } = message;
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Forward connection request to host
+  if (session.host) {
+    session.host.send(
+      JSON.stringify({
+        type: "connection_request",
+        sessionId,
+        clientId,
+        fromSessionId,
+        fromClientId,
+      })
+    );
+  }
+}
+
+// Handle connection accepted
+function handleConnectionAccepted(ws, message) {
+  const { sessionId, clientId } = message;
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Move client from pending to active
+  if (session.pendingClients && session.pendingClients.has(clientId)) {
+    const clientWs = session.pendingClients.get(clientId);
+    session.clients.set(clientId, clientWs);
+    session.pendingClients.delete(clientId);
+
+    console.log(
+      "✅ Client connection accepted:",
+      sessionId,
+      "Client:",
+      clientId
+    );
+    clientWs.send(
+      JSON.stringify({
+        type: "session_joined",
+        sessionId,
+        clientId,
+      })
+    );
+
+    // Notify host about new client
+    if (session.host) {
+      session.host.send(
+        JSON.stringify({
+          type: "client_joined",
+          sessionId,
+          clientId,
+        })
+      );
+    }
+  }
+}
+
+// Handle connection rejected
+function handleConnectionRejected(ws, message) {
+  const { sessionId, clientId } = message;
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Remove client from pending
+  if (session.pendingClients && session.pendingClients.has(clientId)) {
+    const clientWs = session.pendingClients.get(clientId);
+    session.pendingClients.delete(clientId);
+
+    console.log(
+      "❌ Client connection rejected:",
+      sessionId,
+      "Client:",
+      clientId
+    );
+    clientWs.send(
+      JSON.stringify({
+        type: "connection_rejected",
         sessionId,
         clientId,
       })
@@ -222,10 +390,22 @@ function cleanupDisconnectedClient(ws) {
           })
         );
       });
+      // Also notify pending clients
+      if (session.pendingClients) {
+        session.pendingClients.forEach((clientWs) => {
+          clientWs.send(
+            JSON.stringify({
+              type: "host_disconnected",
+              sessionId,
+            })
+          );
+        });
+      }
       sessions.delete(sessionId);
       break;
     }
 
+    // Check active clients
     for (const [clientId, clientWs] of session.clients.entries()) {
       if (clientWs === ws) {
         console.log(
@@ -246,6 +426,22 @@ function cleanupDisconnectedClient(ws) {
           );
         }
         break;
+      }
+    }
+
+    // Check pending clients
+    if (session.pendingClients) {
+      for (const [clientId, clientWs] of session.pendingClients.entries()) {
+        if (clientWs === ws) {
+          console.log(
+            "🔌 Pending client disconnected from session:",
+            sessionId,
+            "Client:",
+            clientId
+          );
+          session.pendingClients.delete(clientId);
+          break;
+        }
       }
     }
   }
