@@ -7,23 +7,11 @@ const server = http.createServer();
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
 
-// Session management
+// Store sessions
 const sessions = new Map();
-
-// Session interface
-class Session {
-  constructor(sessionId) {
-    this.sessionId = sessionId;
-    this.host = null;
-    this.clients = new Map();
-    this.createdAt = new Date();
-    this.connectionOrder = []; // Track connection order for role assignment
-  }
-}
 
 console.log("🚀 Cloud WebSocket Server Starting...");
 
-// Handle WebSocket connections
 wss.on("connection", (ws) => {
   console.log("🔌 New WebSocket connection established");
 
@@ -47,11 +35,23 @@ function handleWebSocketMessage(ws, message) {
   console.log("📨 Received message:", message.type);
 
   switch (message.type) {
-    case "connect_to_session":
-      handleConnectToSession(ws, message);
+    case "create_session":
+      handleCreateSession(ws, message);
+      break;
+    case "join_session":
+      handleJoinSession(ws, message);
       break;
     case "leave_session":
       handleLeaveSession(ws, message);
+      break;
+    case "connection_request":
+      handleConnectionRequest(ws, message);
+      break;
+    case "connection_accepted":
+      handleConnectionAccepted(ws, message);
+      break;
+    case "connection_rejected":
+      handleConnectionRejected(ws, message);
       break;
     case "offer":
     case "answer":
@@ -72,53 +72,158 @@ function handleWebSocketMessage(ws, message) {
   }
 }
 
-// New unified connection handler
-function handleConnectToSession(ws, message) {
+// Handle session creation
+function handleCreateSession(ws, message) {
+  const { sessionId } = message;
+
+  if (sessions.has(sessionId)) {
+    ws.send(
+      JSON.stringify({
+        type: "session_error",
+        sessionId,
+        error: "Session already exists",
+      })
+    );
+    return;
+  }
+
+  sessions.set(sessionId, {
+    host: ws,
+    clients: new Map(),
+    createdAt: new Date(),
+  });
+
+  console.log("✅ Session created:", sessionId);
+  ws.send(
+    JSON.stringify({
+      type: "session_created",
+      sessionId,
+    })
+  );
+}
+
+// Handle session joining
+function handleJoinSession(ws, message) {
   const { sessionId, clientId } = message;
 
-  // Get or create session
-  let session = sessions.get(sessionId);
+  const session = sessions.get(sessionId);
   if (!session) {
-    session = new Session(sessionId);
-    sessions.set(sessionId, session);
-    console.log("✅ Created new session:", sessionId);
+    ws.send(
+      JSON.stringify({
+        type: "session_error",
+        sessionId,
+        error: "Session not found",
+      })
+    );
+    return;
   }
 
-  // Add connection to order tracking
-  session.connectionOrder.push({ ws, clientId });
+  // Send connection request to host
+  if (session.host) {
+    session.host.send(
+      JSON.stringify({
+        type: "connection_request",
+        sessionId,
+        clientId,
+        fromSessionId: clientId.split('_')[0], // Extract session ID from client ID
+        fromClientId: clientId,
+      })
+    );
 
-  // Determine role based on connection order
-  let role;
-  if (session.connectionOrder.length === 1) {
-    // First connection = host
-    role = "host";
-    session.host = ws;
-    console.log("✅ First connection - assigned as host:", clientId);
+    // Store client temporarily until host accepts
+    session.pendingClients = session.pendingClients || new Map();
+    session.pendingClients.set(clientId, ws);
+
+    console.log("📨 Connection request sent to host for client:", clientId);
   } else {
-    // Subsequent connections = client
-    role = "client";
-    session.clients.set(clientId, ws);
-    console.log("✅ Subsequent connection - assigned as client:", clientId);
+    // No host available
+    ws.send(
+      JSON.stringify({
+        type: "session_error",
+        sessionId,
+        error: "No host available for this session",
+      })
+    );
   }
+}
 
-  // Send connection confirmation with role
-  ws.send(JSON.stringify({
-    type: "session_connected",
-    sessionId,
-    clientId,
-    role
-  }));
+// Handle connection request
+function handleConnectionRequest(ws, message) {
+  const { sessionId, clientId, fromSessionId, fromClientId } = message;
 
-  // If this is a client, notify the host
-  if (role === "client" && session.host) {
-    session.host.send(JSON.stringify({
-      type: "client_joined",
-      sessionId,
-      clientId
-    }));
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Forward connection request to host
+  if (session.host) {
+    session.host.send(
+      JSON.stringify({
+        type: "connection_request",
+        sessionId,
+        clientId,
+        fromSessionId,
+        fromClientId,
+      })
+    );
   }
+}
 
-  console.log(`✅ ${role} connected to session:`, sessionId, "Client ID:", clientId);
+// Handle connection accepted
+function handleConnectionAccepted(ws, message) {
+  const { sessionId, clientId } = message;
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Move client from pending to active
+  if (session.pendingClients && session.pendingClients.has(clientId)) {
+    const clientWs = session.pendingClients.get(clientId);
+    session.clients.set(clientId, clientWs);
+    session.pendingClients.delete(clientId);
+
+    console.log("✅ Client connection accepted:", sessionId, "Client:", clientId);
+    clientWs.send(
+      JSON.stringify({
+        type: "session_joined",
+        sessionId,
+        clientId,
+      })
+    );
+
+    // Notify host about new client
+    if (session.host) {
+      session.host.send(
+        JSON.stringify({
+          type: "client_joined",
+          sessionId,
+          clientId,
+        })
+      );
+    }
+  }
+}
+
+// Handle connection rejected
+function handleConnectionRejected(ws, message) {
+  const { sessionId, clientId } = message;
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  // Remove client from pending
+  if (session.pendingClients && session.pendingClients.has(clientId)) {
+    const clientWs = session.pendingClients.get(clientId);
+    session.pendingClients.delete(clientId);
+
+    console.log("❌ Client connection rejected:", sessionId, "Client:", clientId);
+    clientWs.send(
+      JSON.stringify({
+        type: "connection_rejected",
+        sessionId,
+        clientId,
+      })
+    );
+  }
 }
 
 // Handle session leaving
@@ -128,20 +233,16 @@ function handleLeaveSession(ws, message) {
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // Find and remove from connection order
-  const connectionIndex = session.connectionOrder.findIndex(conn => conn.ws === ws);
-  if (connectionIndex !== -1) {
-    session.connectionOrder.splice(connectionIndex, 1);
-  }
-
   if (session.host === ws) {
     // Host is leaving
     console.log("🔌 Host leaving session:", sessionId);
     session.clients.forEach((clientWs) => {
-      clientWs.send(JSON.stringify({
-        type: "host_disconnected",
-        sessionId
-      }));
+      clientWs.send(
+        JSON.stringify({
+          type: "host_disconnected",
+          sessionId,
+        })
+      );
     });
     sessions.delete(sessionId);
   } else {
@@ -150,52 +251,52 @@ function handleLeaveSession(ws, message) {
     console.log("🔌 Client leaving session:", sessionId, "Client:", clientId);
 
     if (session.host) {
-      session.host.send(JSON.stringify({
-        type: "client_left",
-        sessionId,
-        clientId
-      }));
+      session.host.send(
+        JSON.stringify({
+          type: "client_left",
+          sessionId,
+          clientId,
+        })
+      );
     }
   }
 }
 
-// Handle signaling messages (offer, answer, ICE candidates)
+// Handle signaling messages
 function handleSignalingMessage(ws, message) {
   const { sessionId, clientId } = message;
 
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // Forward signaling messages
   if (session.host === ws) {
-    // Host sending to specific client
-    const targetClient = session.clients.get(clientId);
-    if (targetClient) {
-      targetClient.send(JSON.stringify(message));
+    // Message from host to specific client
+    const clientWs = session.clients.get(clientId);
+    if (clientWs) {
+      clientWs.send(JSON.stringify(message));
     }
   } else {
-    // Client sending to host
+    // Message from client to host
     if (session.host) {
       session.host.send(JSON.stringify(message));
     }
   }
 }
 
-// Handle control messages (mouse, keyboard, screen resolution)
+// Handle control messages
 function handleControlMessage(ws, message) {
-  const { sessionId } = message;
+  const { sessionId, clientId } = message;
 
   const session = sessions.get(sessionId);
   if (!session) return;
 
-  // Forward control messages
   if (session.host === ws) {
-    // Host sending to all clients
+    // Control message from host to clients
     session.clients.forEach((clientWs) => {
       clientWs.send(JSON.stringify(message));
     });
   } else {
-    // Client sending to host
+    // Control message from client to host
     if (session.host) {
       session.host.send(JSON.stringify(message));
     }
@@ -205,39 +306,68 @@ function handleControlMessage(ws, message) {
 // Clean up disconnected clients
 function cleanupDisconnectedClient(ws) {
   for (const [sessionId, session] of sessions.entries()) {
-    // Check if this is the host
     if (session.host === ws) {
       console.log("🔌 Host disconnected from session:", sessionId);
       session.clients.forEach((clientWs) => {
-        clientWs.send(JSON.stringify({
-          type: "host_disconnected",
-          sessionId
-        }));
+        clientWs.send(
+          JSON.stringify({
+            type: "host_disconnected",
+            sessionId,
+          })
+        );
       });
+      // Also notify pending clients
+      if (session.pendingClients) {
+        session.pendingClients.forEach((clientWs) => {
+          clientWs.send(
+            JSON.stringify({
+              type: "host_disconnected",
+              sessionId,
+            })
+          );
+        });
+      }
       sessions.delete(sessionId);
       break;
     }
 
-    // Check if this is a client
+    // Check active clients
     for (const [clientId, clientWs] of session.clients.entries()) {
       if (clientWs === ws) {
-        console.log("🔌 Client disconnected from session:", sessionId, "Client:", clientId);
+        console.log(
+          "🔌 Client disconnected from session:",
+          sessionId,
+          "Client:",
+          clientId
+        );
         session.clients.delete(clientId);
 
-        // Remove from connection order
-        const connectionIndex = session.connectionOrder.findIndex(conn => conn.ws === ws);
-        if (connectionIndex !== -1) {
-          session.connectionOrder.splice(connectionIndex, 1);
-        }
-
         if (session.host) {
-          session.host.send(JSON.stringify({
-            type: "client_left",
-            sessionId,
-            clientId
-          }));
+          session.host.send(
+            JSON.stringify({
+              type: "client_left",
+              sessionId,
+              clientId,
+            })
+          );
         }
         break;
+      }
+    }
+
+    // Check pending clients
+    if (session.pendingClients) {
+      for (const [clientId, clientWs] of session.pendingClients.entries()) {
+        if (clientWs === ws) {
+          console.log(
+            "🔌 Pending client disconnected from session:",
+            sessionId,
+            "Client:",
+            clientId
+          );
+          session.pendingClients.delete(clientId);
+          break;
+        }
       }
     }
   }
@@ -249,8 +379,7 @@ const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`✅ Cloud WebSocket server running on port ${PORT}`);
   console.log(`🌐 Server is ready for internet connections`);
-  console.log(`📡 Server URL: wss://deskviewer-cloud-server-production.up.railway.app`);
-  console.log(`📊 Sessions: ${sessions.size}`);
+  console.log(`📡 Sessions: ${sessions.size}`);
 });
 
 // Handle server errors
@@ -265,4 +394,4 @@ process.on("SIGTERM", () => {
     console.log("✅ Server closed");
     process.exit(0);
   });
-}); 
+});
