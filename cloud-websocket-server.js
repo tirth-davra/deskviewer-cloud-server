@@ -169,7 +169,17 @@ function handleConnectionResponse(ws, message) {
       })
     );
 
+    // Automatically send start_screen_sharing to the client (requester)
+    requesterSession.ws.send(
+      JSON.stringify({
+        type: "start_screen_sharing",
+        sessionId: targetSessionId, // Host session ID
+        targetSessionId: fromSessionId, // Client session ID
+      })
+    );
+
     console.log("✅ Connection accepted between", fromSessionId, "and", targetSessionId);
+    console.log("📺 Auto-sent start_screen_sharing to client");
   } else {
     // Notify requester that connection was declined
     requesterSession.ws.send(
