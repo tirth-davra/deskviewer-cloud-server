@@ -32,7 +32,10 @@ wss.on("connection", (ws) => {
 
 // Handle WebSocket messages
 function handleWebSocketMessage(ws, message) {
-  console.log("📨 Received message:", message.type);
+  // Optimized: Only log non-frequent message types
+  if (!['mouse_move'].includes(message.type)) {
+    console.log("📨 Received message:", message.type);
+  }
 
   switch (message.type) {
     case "create_session":
@@ -203,11 +206,13 @@ function handleControlMessage(ws, message) {
   if (session.host === ws) {
     // Control message from host to clients
     session.clients.forEach((clientWs) => {
-      clientWs.send(JSON.stringify(message));
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(message));
+      }
     });
   } else {
     // Control message from client to host
-    if (session.host) {
+    if (session.host && session.host.readyState === WebSocket.OPEN) {
       session.host.send(JSON.stringify(message));
     }
   }
