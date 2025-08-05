@@ -55,6 +55,9 @@ function handleWebSocketMessage(ws, message) {
     case "ice_candidate":
       handleSignalingMessage(ws, message);
       break;
+    case "heartbeat":
+      handleHeartbeat(ws, message);
+      break;
     case "mouse_move":
     case "mouse_click":
     case "mouse_down":
@@ -229,6 +232,17 @@ function handleSignalingMessage(ws, message) {
   if (!targetSession) return;
 
   targetSession.ws.send(JSON.stringify(message));
+}
+
+// Handle heartbeat messages
+function handleHeartbeat(ws, message) {
+  const { sessionId } = message;
+  
+  const session = activeSessions.get(sessionId);
+  if (session) {
+    session.lastHeartbeat = new Date();
+    console.log("💓 Heartbeat received from session:", sessionId);
+  }
 }
 
 // Handle control messages
