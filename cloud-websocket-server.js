@@ -163,14 +163,17 @@ function handleConnectionResponse(ws, message) {
       targetSession.connectedTo = fromSessionId;
     }
 
-    // Notify requester that connection was accepted
-    requesterSession.ws.send(
-      JSON.stringify({
-        type: "connection_accepted",
-        targetSessionId,
-        fromSessionId,
-      })
-    );
+    // Notify host that connection was accepted
+    const targetSession = activeSessions.get(targetSessionId);
+    if (targetSession) {
+      targetSession.ws.send(
+        JSON.stringify({
+          type: "connection_accepted",
+          targetSessionId,
+          fromSessionId,
+        })
+      );
+    }
 
     // Automatically send start_screen_sharing to the client (requester)
     requesterSession.ws.send(
