@@ -161,11 +161,8 @@ function handleConnectionResponse(ws, message) {
     if (targetSession) {
       targetSession.status = "connected";
       targetSession.connectedTo = fromSessionId;
-    }
-
-    // Notify host that connection was accepted
-    const targetSession = activeSessions.get(targetSessionId);
-    if (targetSession) {
+      
+      // Notify host that connection was accepted
       targetSession.ws.send(
         JSON.stringify({
           type: "connection_accepted",
