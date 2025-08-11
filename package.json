@@ -5,9 +5,17 @@
   "main": "cloud-websocket-server.js",
   "scripts": {
     "start": "node cloud-websocket-server.js",
-    "dev": "nodemon cloud-websocket-server.js"
+    "dev": "nodemon cloud-websocket-server.js",
+    "dev:local": "HOST=0.0.0.0 nodemon cloud-websocket-server.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^17.2.1",
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.14.3",
+    "sequelize": "^6.37.7",
     "ws": "^8.16.0"
   },
   "devDependencies": {
@@ -24,4 +32,4 @@
   ],
   "author": "DeskViewer Team",
   "license": "MIT"
-} 
+}

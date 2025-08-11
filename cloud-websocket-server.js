@@ -1,8 +1,25 @@
 const WebSocket = require("ws");
-const http = require("http");
+const express = require("express");
+const cors = require("cors");
+require("dotenv").config();
 
-// Create HTTP server
-const server = http.createServer();
+// Import database and models
+const { sequelize, testConnection } = require("./config/database");
+const User = require("./models/User");
+
+// Import routes
+const apiRoutes = require("./routes");
+
+// Create Express app
+const app = express();
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Create HTTP server from Express app
+const server = require("http").createServer(app);
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
@@ -10,7 +27,30 @@ const wss = new WebSocket.Server({ server });
 // Store sessions
 const sessions = new Map();
 
-console.log("🚀 Cloud WebSocket Server Starting...");
+// Mount API routes
+app.use("/api", apiRoutes);
+
+// Initialize database and sync models
+const initializeDatabase = async () => {
+  try {
+    await testConnection();
+    await sequelize.sync(); 
+    console.log("✅ Database models synchronized");
+  } catch (error) {
+    console.error("❌ Database initialization failed:", error);
+  }
+};
+
+console.log("🚀 DeskViewer Express + WebSocket Server Starting...");
+
+// Initialize database before starting server
+initializeDatabase()
+  .then(() => {
+    console.log("✅ Database initialized successfully");
+  })
+  .catch((error) => {
+    console.error("❌ Database initialization failed:", error);
+  });
 
 wss.on("connection", (ws) => {
   console.log("🔌 New WebSocket connection established");
@@ -56,6 +96,8 @@ function handleWebSocketMessage(ws, message) {
     case "key_down":
     case "key_up":
     case "screen_resolution":
+    case "permission_request":
+    case "permission_response":
       handleControlMessage(ws, message);
       break;
     default:
@@ -67,15 +109,40 @@ function handleWebSocketMessage(ws, message) {
 function handleCreateSession(ws, message) {
   const { sessionId } = message;
 
+  // Check if session already exists
   if (sessions.has(sessionId)) {
-    ws.send(
-      JSON.stringify({
-        type: "session_error",
-        sessionId,
-        error: "Session already exists",
-      })
-    );
-    return;
+    const existingSession = sessions.get(sessionId);
+    
+    // If the existing session's host is disconnected (WebSocket is closed), 
+    // allow recreation of the session
+    if (existingSession.host.readyState !== WebSocket.OPEN) {
+      console.log("🔄 Recreating session with disconnected host:", sessionId);
+      
+      // Notify any remaining clients that the session is being recreated
+      existingSession.clients.forEach((clientWs) => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(
+            JSON.stringify({
+              type: "host_disconnected",
+              sessionId,
+            })
+          );
+        }
+      });
+      
+      // Remove the old session
+      sessions.delete(sessionId);
+    } else {
+      // Session exists with an active host
+      ws.send(
+        JSON.stringify({
+          type: "session_error",
+          sessionId,
+          error: "Session already exists",
+        })
+      );
+      return;
+    }
   }
 
   sessions.set(sessionId, {
@@ -251,13 +318,28 @@ function cleanupDisconnectedClient(ws) {
   }
 }
 
-// Get port from environment or use default
+// Get port and host from environment or use defaults
 const PORT = process.env.PORT || 8080;
+const HOST = process.env.HOST || "0.0.0.0"; // Listen on all network interfaces
 
-server.listen(PORT, () => {
-  console.log(`✅ Cloud WebSocket server running on port ${PORT}`);
-  console.log(`🌐 Server is ready for internet connections`);
-  console.log(`📡 Sessions: ${sessions.size}`);
+server.listen(PORT, HOST, () => {
+  console.log(`✅ Express + WebSocket server running on ${HOST}:${PORT}`);
+  console.log(`🌐 Server is ready for network connections`);
+  console.log(`📡 Active sessions: ${sessions.size}`);
+
+  // Display local IP addresses for easy access
+  const os = require("os");
+  const networkInterfaces = os.networkInterfaces();
+
+  console.log("\n🌍 Available network addresses:");
+  Object.keys(networkInterfaces).forEach((interfaceName) => {
+    networkInterfaces[interfaceName].forEach((interface) => {
+      if (interface.family === "IPv4" && !interface.internal) {
+        console.log(`   HTTP: http://${interface.address}:${PORT}`);
+        console.log(`   WebSocket: ws://${interface.address}:${PORT}`);
+      }
+    });
+  });
 });
 
 // Handle server errors
