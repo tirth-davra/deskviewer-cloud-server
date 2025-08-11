@@ -1,141 +1,130 @@
 # DeskViewer Cloud Server
 
-Express + WebSocket server with MySQL database, Sequelize ORM, and JWT authentication for DeskViewer remote desktop application.
-
-## 🏗️ Project Structure
-
-```
-deskviewer-cloud-server/
-├── config/
-│   └── database.js          # Database configuration
-├── controllers/
-│   └── authController.js     # Authentication logic
-├── middleware/
-│   └── auth.js              # JWT authentication middleware
-├── models/
-│   └── User.js              # User model with Sequelize
-├── routes/
-│   ├── index.js             # Main routes index
-│   └── auth.js              # Authentication routes
-├── cloud-websocket-server.js # Main server file
-├── package.json
-└── .env.example             # Environment variables template
-```
-
-## Running on Local Network
-
-To run the server on your local IP so other computers can access it:
-
-### Method 1: Using npm scripts
-```bash
-# Install dependencies
-npm install
-
-# Run in development mode (will show your local IP addresses)
-npm run dev
-```
-
-### Method 2: Direct node command
-```bash
-# Install dependencies
-npm install
-
-# Run with explicit host binding
-HOST=0.0.0.0 node cloud-websocket-server.js
-```
-
-### Method 3: Using nodemon for development
-```bash
-# Install dependencies
-npm install
-
-# Run with nodemon (auto-restart on file changes)
-HOST=0.0.0.0 nodemon cloud-websocket-server.js
-```
-
-## Access from Other Computers
-
-When you run the server, it will display your local IP addresses. Other computers on your network can connect using:
-
-- **WebSocket URL**: `ws://YOUR_LOCAL_IP:8080`
-- **HTTP URL**: `http://YOUR_LOCAL_IP:8080`
-
-Example:
-- If your local IP is `192.168.1.100`, other computers would use:
-  - `ws://192.168.1.100:8080` (for WebSocket connections)
-  - `http://192.168.1.100:8080` (for HTTP API calls)
-
-## 🗄️ Database Setup
-
-1. **Install MySQL** and create a database:
-   ```sql
-   CREATE DATABASE deskviewer_db;
-   ```
-
-2. **Configure environment variables** (copy `.env.example` to `.env`):
-   ```bash
-   cp .env.example .env
-   ```
-
-3. **Update `.env` file** with your database credentials:
-   ```env
-   DB_HOST=localhost
-   DB_PORT=3306
-   DB_NAME=deskviewer_db
-   DB_USER=root
-   DB_PASSWORD=your_password
-   JWT_SECRET=your-super-secret-jwt-key
-   ```
-
-## 🔐 Authentication API Endpoints
-
-### Public Routes (No Authentication Required)
-- `POST /api/auth/login` - User login
-
-### API Usage Examples
-
-**Login with email:**
-```bash
-curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "password": "password123"
-  }'
-```
-
-**Response includes session code:**
-```json
-{
-  "success": true,
-  "message": "Login successful",
-  "data": {
-    "user": { "id": 1, "email": "user@example.com" },
-    "token": "jwt_token_here",
-    "sessionCode": "1234567890"
-  }
-}
-```
-
-
-
-## Environment Variables
-
-- `PORT`: Server port (default: 8080)
-- `HOST`: Server host (default: 0.0.0.0 - all interfaces)
+This is the cloud WebSocket server for DeskViewer, deployed on Railway to handle signaling between remote desktop connections.
 
 ## Features
 
-- **WebSocket signaling** for WebRTC connections
-- **Express API server** for HTTP endpoints
-- **Session management** for remote desktop sessions
-- **Real-time control message relay**
-- **Automatic cleanup** of disconnected clients
-- **CORS enabled** for cross-origin requests
-- **JSON API endpoints** for future features
-- **MD5 password hashing** for compatibility with existing database
-- **JWT authentication** for secure API access
+- **WebSocket Signaling**: Handles WebRTC signaling between peers
+- **Session Management**: Manages remote desktop sessions
+- **Permission-Based Connections**: Host must accept incoming connections
+- **Connection Request Flow**: New unified interface with automatic role detection
+- **Cross-Network Support**: Enables connections across different networks
 
-## Development
+## Deployment
 
-The server will automatically restart when you make changes to the code (when using `npm run dev`). 
+### Railway Deployment
+
+1. **Connect to Railway**:
+   ```bash
+   # Install Railway CLI
+   npm install -g @railway/cli
+   
+   # Login to Railway
+   railway login
+   ```
+
+2. **Deploy to Railway**:
+   ```bash
+   # Navigate to cloud server directory
+   cd deskviewer-cloud-server
+   
+   # Deploy to Railway
+   railway up
+   ```
+
+3. **Set Environment Variables**:
+   - `PORT`: Railway will set this automatically
+   - No additional environment variables needed
+
+### Manual Deployment
+
+1. **Install Dependencies**:
+   ```bash
+   npm install
+   ```
+
+2. **Start Server**:
+   ```bash
+   node cloud-websocket-server.js
+   ```
+
+## Connection Flow
+
+### New Permission-Based Flow
+
+1. **Client Initiates Connection**:
+   - Client enters host's Session ID
+   - Client clicks "Connect"
+   - Server sends connection request to host
+
+2. **Host Receives Request**:
+   - Host sees popup: "Accept incoming connection from [Session ID]?"
+   - Host can accept or decline
+
+3. **Connection Established**:
+   - On accept: Screen sharing begins automatically
+   - On decline: Client receives "Connection Rejected" message
+
+### Message Types
+
+- `connection_request`: Sent to host when client wants to connect
+- `connection_accepted`: Sent by host to accept connection
+- `connection_rejected`: Sent by host to reject connection
+- `session_joined`: Sent to client when connection is accepted
+- `client_joined`: Sent to host when client successfully joins
+
+## Server Architecture
+
+### Session Management
+
+```javascript
+const sessions = new Map();
+// Each session contains:
+// - host: WebSocket connection to host
+// - clients: Map of active client connections
+// - pendingClients: Map of clients waiting for host approval
+// - createdAt: Session creation timestamp
+```
+
+### Connection States
+
+1. **Pending**: Client has requested connection, waiting for host approval
+2. **Active**: Host has accepted, client can view and control
+3. **Disconnected**: Connection ended or rejected
+
+## Monitoring
+
+The server logs all important events:
+- Connection requests and responses
+- Session creation and cleanup
+- Client connections and disconnections
+- Error handling
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Connection Timeout**: Check if Railway server is running
+2. **Session Not Found**: Verify Session ID is correct
+3. **Permission Denied**: Host must explicitly accept connections
+
+### Logs
+
+Monitor Railway logs:
+```bash
+railway logs
+```
+
+## Security
+
+- No authentication required (simple Session ID system)
+- Host must explicitly accept connections
+- Connections are peer-to-peer after initial handshake
+- No screen data passes through the server (only signaling)
+
+## Performance
+
+- Lightweight WebSocket server
+- Minimal memory usage
+- Automatic cleanup of disconnected sessions
+- Supports multiple concurrent sessions 

@@ -72,7 +72,10 @@ wss.on("connection", (ws) => {
 
 // Handle WebSocket messages
 function handleWebSocketMessage(ws, message) {
-  console.log("📨 Received message:", message.type);
+  // Optimized: Only log non-frequent message types
+  if (!['mouse_move'].includes(message.type)) {
+    console.log("📨 Received message:", message.type);
+  }
 
   switch (message.type) {
     case "create_session":
@@ -99,6 +102,10 @@ function handleWebSocketMessage(ws, message) {
     case "permission_request":
     case "permission_response":
       handleControlMessage(ws, message);
+      break;
+    case "permission_request":
+    case "permission_response":
+      handlePermissionMessage(ws, message);
       break;
     default:
       console.warn("⚠️ Unknown message type:", message.type);
@@ -266,11 +273,36 @@ function handleControlMessage(ws, message) {
   if (session.host === ws) {
     // Control message from host to clients
     session.clients.forEach((clientWs) => {
-      clientWs.send(JSON.stringify(message));
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(JSON.stringify(message));
+      }
     });
   } else {
     // Control message from client to host
+    if (session.host && session.host.readyState === WebSocket.OPEN) {
+      session.host.send(JSON.stringify(message));
+    }
+  }
+}
+
+// Handle permission messages
+function handlePermissionMessage(ws, message) {
+  const { sessionId, clientId } = message;
+
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  if (session.host === ws) {
+    // Permission response from host to specific client
+    const clientWs = session.clients.get(clientId);
+    if (clientWs) {
+      console.log(`🔐 Host ${message.granted ? 'granted' : 'denied'} permission for client ${clientId}`);
+      clientWs.send(JSON.stringify(message));
+    }
+  } else {
+    // Permission request from client to host (shouldn't happen in our flow, but handle it)
     if (session.host) {
+      console.log(`🔐 Permission request from client ${clientId} to host`);
       session.host.send(JSON.stringify(message));
     }
   }
