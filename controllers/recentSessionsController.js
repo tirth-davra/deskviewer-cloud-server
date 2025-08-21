@@ -1,5 +1,6 @@
 const Recent_sessions = require("../models/Recent_sessions");
 const User = require("../models/User");
+const { Op } = require("sequelize");
 
 // Add a recent session for a user
 const addRecentSession = async (req, res) => {
@@ -27,7 +28,7 @@ const addRecentSession = async (req, res) => {
     const existingSession = await Recent_sessions.findOne({
       where: {
         user_id,
-        session_id: parseInt(session_id), // Convert to integer
+        session_id: parseInt(session_id), // Convert to integer for BIGINT field
       },
     });
 
@@ -42,7 +43,7 @@ const addRecentSession = async (req, res) => {
       // Create new session
       const newSession = await Recent_sessions.create({
         user_id,
-        session_id: parseInt(session_id), // Convert to integer
+        session_id: parseInt(session_id), // Convert to integer for BIGINT field
       });
 
       return res.status(201).json({
@@ -85,10 +86,45 @@ const getRecentSessions = async (req, res) => {
       attributes: ["id", "session_id"], // Only return id and session_id
     });
 
+    // Collect session IDs from recent sessions
+    const sessionIds = recentSessions.map((s) => s.session_id);
+
+    if (sessionIds.length === 0) {
+      return res.json({
+        success: true,
+        message: "Recent sessions retrieved",
+        data: [],
+      });
+    }
+
+    // Find users who currently have these session IDs (active sessions only)
+    const activeUsers = await User.findAll({
+      where: { session_id: { [Op.in]: sessionIds } },
+      attributes: ["id", "first_name", "last_name", "session_id"],
+    });
+
+    // Map session_id -> user details for quick lookup
+    const sessionIdToUser = new Map(
+      activeUsers.map((u) => [Number(u.session_id), { first_name: u.first_name, last_name: u.last_name }])
+    );
+
+    // Filter recent sessions to only those that are still active, and attach user names
+    const activeRecentSessions = recentSessions
+      .filter((s) => sessionIdToUser.has(Number(s.session_id)))
+      .map((s) => {
+        const userInfo = sessionIdToUser.get(Number(s.session_id));
+        return {
+          id: s.id,
+          session_id: s.session_id,
+          first_name: userInfo.first_name,
+          last_name: userInfo.last_name,
+        };
+      });
+
     res.json({
       success: true,
       message: "Recent sessions retrieved",
-      data: recentSessions,
+      data: activeRecentSessions,
     });
   } catch (error) {
     console.error("Get recent sessions error:", error);
@@ -119,7 +155,7 @@ const removeRecentSession = async (req, res) => {
     const deletedSession = await Recent_sessions.destroy({
       where: {
         user_id,
-        session_id: parseInt(session_id), // Convert to integer
+        session_id: parseInt(session_id), // Convert to integer for BIGINT field
       },
     });
 

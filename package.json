@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node cloud-websocket-server.js",
     "dev": "nodemon cloud-websocket-server.js",
-    "dev:local": "HOST=0.0.0.0 nodemon cloud-websocket-server.js"
+    "dev:local": "HOST=0.0.0.0 nodemon cloud-websocket-server.js",
+    "test:session": "node test-session-id.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

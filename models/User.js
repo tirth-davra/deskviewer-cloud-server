@@ -26,6 +26,23 @@ const User = sequelize.define(
         len: [6, 255],
       },
     },
+    first_name: {
+      type: DataTypes.STRING(30),
+      allowNull: false,
+    },
+    last_name: {
+      type: DataTypes.STRING(30),
+      allowNull: false,
+    },
+    session_id: {
+      type: DataTypes.BIGINT,
+      unique: true,
+      allowNull: true,
+      validate: {
+        len: [10, 10], // 10-digit session codes
+        isNumeric: true,
+      },
+    },
   },
   {
     tableName: "users",

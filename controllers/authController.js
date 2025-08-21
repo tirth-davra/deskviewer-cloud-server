@@ -36,9 +36,12 @@ const login = async (req, res) => {
       });
     }
 
-    // Generate token and session code
+    // Generate token and unique session code
     const token = generateToken(user.id);
-    const sessionCode = generateSessionCode();
+    const sessionCode = await generateSessionCode();
+    
+    // Store the generated session code as session_id in the database
+    await user.update({ session_id: parseInt(sessionCode) });
 
     res.json({
       success: true,

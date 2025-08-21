@@ -27,6 +27,9 @@ const wss = new WebSocket.Server({ server });
 // Store sessions
 const sessions = new Map();
 
+// Store clients listening for session status updates
+const statusListeners = new Set();
+
 // Mount API routes
 app.use("/api", apiRoutes);
 
@@ -66,6 +69,8 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     console.log("🔌 WebSocket connection closed");
+    // Remove from status listeners if it was subscribed
+    statusListeners.delete(ws);
     cleanupDisconnectedClient(ws);
   });
 });
@@ -107,6 +112,9 @@ function handleWebSocketMessage(ws, message) {
     case "permission_response":
       handlePermissionMessage(ws, message);
       break;
+    case "subscribe_status_updates":
+      handleStatusSubscription(ws, message);
+      break;
     default:
       console.warn("⚠️ Unknown message type:", message.type);
   }
@@ -137,8 +145,9 @@ function handleCreateSession(ws, message) {
         }
       });
       
-      // Remove the old session
+      // Remove the old session and broadcast offline status
       sessions.delete(sessionId);
+      broadcastSessionStatusUpdate(sessionId, "offline");
     } else {
       // Session exists with an active host
       ws.send(
@@ -159,6 +168,10 @@ function handleCreateSession(ws, message) {
   });
 
   console.log("✅ Session created:", sessionId);
+  
+  // Broadcast that this session is now online
+  broadcastSessionStatusUpdate(sessionId, "online");
+  
   ws.send(
     JSON.stringify({
       type: "session_created",
@@ -225,6 +238,7 @@ function handleLeaveSession(ws, message) {
       );
     });
     sessions.delete(sessionId);
+    broadcastSessionStatusUpdate(sessionId, "offline");
   } else {
     // Client is leaving
     session.clients.delete(clientId);
@@ -322,6 +336,7 @@ function cleanupDisconnectedClient(ws) {
         );
       });
       sessions.delete(sessionId);
+      broadcastSessionStatusUpdate(sessionId, "offline");
       break;
     }
 
@@ -349,6 +364,111 @@ function cleanupDisconnectedClient(ws) {
     }
   }
 }
+
+// Function to check if a session is currently active
+function isSessionActive(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  
+  // Check if host is connected and WebSocket is open
+  return session.host && session.host.readyState === WebSocket.OPEN;
+}
+
+// Broadcast session status update to all status listeners
+function broadcastSessionStatusUpdate(sessionId, status) {
+  const statusMessage = JSON.stringify({
+    type: "session_status_update",
+    sessionId: sessionId.toString(),
+    status: status, // 'online' or 'offline'
+    timestamp: new Date().toISOString()
+  });
+
+  // Send to all status listeners
+  statusListeners.forEach((ws) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(statusMessage);
+      } catch (error) {
+        console.error("Failed to send status update:", error);
+        // Remove broken connections
+        statusListeners.delete(ws);
+      }
+    } else {
+      // Clean up closed connections
+      statusListeners.delete(ws);
+    }
+  });
+
+  console.log(`📡 Broadcasted status update: ${sessionId} → ${status}`);
+}
+
+// Handle status subscription requests
+function handleStatusSubscription(ws, message) {
+  statusListeners.add(ws);
+  console.log("📡 Client subscribed to status updates");
+  
+  // Send confirmation
+  ws.send(JSON.stringify({
+    type: "status_subscription_confirmed",
+    message: "Successfully subscribed to session status updates"
+  }));
+}
+
+// API endpoint to check session status
+app.get('/api/sessions/status/:sessionId', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const isActive = isSessionActive(sessionId);
+    
+    res.json({
+      success: true,
+      data: {
+        sessionId,
+        isActive,
+        status: isActive ? 'online' : 'offline'
+      }
+    });
+  } catch (error) {
+    console.error('Session status check error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check session status',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
+
+// API endpoint to check multiple session statuses
+app.post('/api/sessions/status/batch', (req, res) => {
+  try {
+    const { sessionIds } = req.body;
+    
+    if (!Array.isArray(sessionIds)) {
+      return res.status(400).json({
+        success: false,
+        message: 'sessionIds must be an array'
+      });
+    }
+    
+    const statuses = sessionIds.map(sessionId => ({
+      sessionId: sessionId.toString(),
+      isActive: isSessionActive(sessionId.toString()),
+      status: isSessionActive(sessionId.toString()) ? 'online' : 'offline'
+    }));
+    
+    res.json({
+      success: true,
+      data: statuses
+    });
+  } catch (error) {
+    console.error('Batch session status check error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check session statuses',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
+    });
+  }
+});
 
 // Get port and host from environment or use defaults
 const PORT = process.env.PORT || 8080;
